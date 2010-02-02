@@ -2,33 +2,49 @@ function lisp () {
     this.code = "";
     this.actions = {};
     this.count = 1;
-    this.vars = {
-	"true": true,
-	"false": false
-    };
+    this.vars = [
+		 { // predefined vars
+		     "true": true,
+		     "false": false
+		 }, 
+		 { // global scope
+		 }
+    ];
     this._point=0;
-    this.functions = new lisp_commands;
+    this.functions = {};
 }
 
 lisp.prototype.var_handle = function (name) {
-    var self = this;
+    var v = this.vars, self = this;
     var f = function () {
-	return self.vars[name];
+	if(name=="-") return self._;
+	
+	var at = v.length;
+	while(at--)
+	    if(v[at][name])
+		return v[at][name];
+	return null;
     };
-    f.name = name;
+    f._ = name;
     return f;
 };
 
-
 lisp.prototype.prase = function (code) {
-    this.code = "(__run__ \n"+code.replace(/\#[^\n]*\n/g, "\n")+")";
+    this.code = "(do \n"+code.replace(/\#[^\n]*\n/g, "\n").replace(/\)/g," )") +")";
     this._point = this.code.indexOf("(");
-    this._make_call(this._prase())();
+    var run_at = this._prase();
+    this.actions[0] = ["__run__", function () {return run_at;}];
+    //this._make_call(this._prase())();
 };
+
+lisp.prototype.run = function () {
+    return this._make_call(0)();
+};
+
+
 lisp.prototype._prase = function () {
     with(this) {
-	var titleI = code.indexOf(" ", this._point);
-	if (titleI > code.indexOf(")", this._point)) titleI = code.indexOf(")", _point);
+	var titleI = code.indexOf(" ", this._point) < code.indexOf(")", this._point) ? code.indexOf(" ", this._point) : code.indexOf(")", this._point); 
 	var title = code.substring(this._point+1, titleI),
 	command = [title];
 	_point = titleI;
@@ -56,18 +72,18 @@ lisp.prototype._prase = function () {
 		_point = end+1;
 		break;
 	    default:
-		if(/[0-9]*/.exec(code.substring(_point))!==null) {
+		if(/[0-9]/.exec(code[_point])!==null) {
 		    var number = /[0-9]*/.exec(code.substring(_point));
 		    command.push((function (n) {
 				return function () {
 				    return n;
 				};
-			    })(number));
-		    _point+=number.length;
+			    })(number[0]));
+		    _point+=number[0].length;
 		}else{
-		    var variable = /[a-zA-Z\-]*/.exec(code.substring(_point));
-		    command.push(var_handle(variable));
-		    _point+=variable.length;
+		    var variable = /[a-zA-Z\-\.]*/.exec(code.substring(_point));
+		    command.push(var_handle(variable[0]));
+		    _point+=variable[0].length;
 		}
 	    }
 	    
@@ -78,51 +94,87 @@ lisp.prototype._prase = function () {
 lisp.prototype._make_call = function (num) {
     var self = this;
     function f () {
-	var fun = self.actions[num][0], args = [];
+      	var fun = self.actions[num][0], args=[],doEval = !!self.functions[fun];
 	for(var i=1; i<self.actions[num].length;++i) {  // fix this, it was because of the function calling
-	    args.push(self.actions[num][i]);
+	    if(doEval)
+		args.push(self.actions[num][i]());
+	    else	
+		args.push(self.actions[num][i]);
 	}
-	return self.functions[fun].apply(self, args);
+	var ret = (self.functions[fun] || lisp_commands[fun] || function () {throw("Function "+fun+" not found");}).apply(self, args);
+	if(typeof ret != "undefined")
+	    self._ = ret;
+	return ret;
     };
     f.number = num;
     return f;
 };
 
-function lisp_commands () {
-}
-
-lisp_commands.prototype.print = function () {
-    var s="";
-    for(var i=0;i<arguments.length;++i)
-	s+=arguments[i]();
-    print(s);
-};
-lisp_commands.prototype.__run__ = function () {
-    for(var i=0;i<arguments.length;++i)
-	arguments[i]();
-};
-lisp_commands.prototype['if'] = function (clus, tr, fa) {
-    return clus() ? tr() : (fa || function () {})();
-};
-lisp_commands.prototype.defun = function (name, args, code) {
-    this.functions[name] = function () {
-	
-    };
-};
-
-lisp_commands.prototype.get = function (name) {
-    return this.vars[name()];
-};
-
-lisp_commands.prototype.set = function (name, value) {
-    return this.vars[name()] = value();
-};
-
-lisp_commands.prototype['true'] = function () {
-    return true;
-};
-
-lisp_commands.prototype['false'] = function () {
-    return false;
+var lisp_commands = {
+    print: function () {
+	var s="";
+	for(var i=0;i<arguments.length;++i)
+	    s+=arguments[i]();
+	print(s);
+    },
+    __run__: function (num) {
+	return this._make_call(num())();
+    },
+    'do': function () {
+	for(var i=0;i<arguments.length;++i)
+	    arguments[i]();
+    },
+    'if': function (clus, tr, fa) {
+	return clus() ? tr() : (fa || function () {})();
+    },
+    defun: function (name, args, code) {
+	var argsList = this.actions[args.number];
+	this.functions[name._] = function () {
+	    this.vars.push({}); // set up the function vars
+	    for(var i=0;i<argsList.length;++i) {
+		this.vars[this.vars.length-1][argsList[i]._ || argsList[i]] = arguments[i];
+	    }
+	    var ret = code();
+	    if(typeof ret == "undefined")
+		ret = this._;
+	    this.vars.pop(); // remove the function vars
+	    return ret;
+	};
+    },
+    get: function (name) {
+	return name();
+    },
+    set: function (name, value) {
+	var v = value();
+	this.vars[this.vars.length-1][name._] = v;
+	return v;
+    },
+    'true': function () {
+	    return true;
+    },
+    'false': function () {
+	return false;
+    },
+    '<': function (a,b) {
+	return a() < b();
+    },
+    '>': function (a,b) {
+	return a() > b();
+    },
+    '==': function (a,b) {
+	return a() == b();
+    },
+    'et': function (a,b) {
+	return a() == b();
+    },
+    'ne': function (a,b) {
+	    return a() != b();
+    },
+    '!=': function (a,b) {
+	return a() != b();
+    },
+    'return': function (a) {
+	return a();
+    }
 };
 
